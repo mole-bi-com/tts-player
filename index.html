@@ -577,7 +577,7 @@ function getPlainText(p) {
 //  Web Speech API 엔진
 // ================================================================
 function speakWS(text, onEnd) {
-  const sentences = splitSentences(text);
+  const sentences = splitSentences(text, 'webspeech');
   let i = 0;
   function next() {
     if (!isPlaying || i >= sentences.length) { if (i >= sentences.length) onEnd?.(); return; }
@@ -594,8 +594,36 @@ function speakWS(text, onEnd) {
   next();
 }
 
-function splitSentences(text) {
-  // 0) 공백 정규화 + 마크다운 잔여 기호/이모지 기반 뭉개짐 방지용 정리
+// Supertonic 전용 텍스트 정규화 — 소형 뉴럴 TTS는 서버측 정규화가 없어서
+// 마크다운 잔여물/특수기호/연속 부호/종결 부호 부재에서 발음이 뭉개진다.
+function normalizeForSupertonic(s) {
+  return s
+    // 제로폭·BOM·이형 공백 제거
+    .replace(/[​-‍﻿ ]/g, ' ')
+    // 스마트 따옴표 → 기본 따옴표
+    .replace(/[‘’‛]/g, "'")
+    .replace(/[“”‟]/g, '"')
+    // 말줄임표/연속 마침표 → 단일 마침표 (아티팩트 방지)
+    .replace(/[…]+/g, '.')
+    .replace(/\.{2,}/g, '.')
+    // em/en 대시 → 쉼표 (자연스러운 짧은 휴지)
+    .replace(/[—–]/g, ', ')
+    // 한 줄에 연속된 같은 종결부호는 하나로 (!!, ??, ?!, !? 등)
+    .replace(/([.!?。！？])\1+/g, '$1')
+    .replace(/[!?]{2,}/g, m => m[0])
+    // 괄호 내부만 남기고 괄호 제거(열·닫 괄호는 음성으로 불필요한 휴지를 만듦)
+    .replace(/[\(\)\[\]\{\}<>《》「」『』]/g, ' ')
+    // 잔여 마크다운 기호
+    .replace(/[#*_`~]/g, ' ')
+    // 공백 정규화
+    .replace(/[ \t]+/g, ' ')
+    .trim()
+    // 종결 부호 없으면 마침표 부여 — 꼬리 음 뭉개짐 방지
+    .replace(/([^.!?。！？,，:;])$/, '$1.');
+}
+
+function splitSentences(text, engine) {
+  // 0) 공백 정규화
   const clean = text
     .replace(/\r/g, '')
     .replace(/[ \t]+/g, ' ')
@@ -609,8 +637,15 @@ function splitSentences(text) {
                        .map(s => s.trim())
                        .filter(Boolean);
 
-  // 2) 2차 분리: 너무 긴 문장(>220자)만 절 경계(쉼표/세미콜론)에서 쪼갠다.
-  const SOFT_MAX = 220;
+  // 엔진별 적정 청크 크기:
+  //  - Supertonic(소형 뉴럴): 60–140자 구간이 가장 안정. 200자 넘으면 중반부 음소 손실.
+  //  - Web Speech(Edge/클라우드): 더 긴 문장도 자연스럽게 처리.
+  const isST = engine === 'supertonic';
+  const SOFT_MAX = isST ? 140 : 220;
+  const MAX      = isST ? 160 : 260;
+  const MIN      = isST ? 24  : 20;
+
+  // 2) 2차 분리: SOFT_MAX 초과 문장만 절 경계(쉼표/세미콜론)에서 쪼갠다.
   const split = [];
   for (const s of primary) {
     if (s.length <= SOFT_MAX) { split.push(s); continue; }
@@ -618,8 +653,7 @@ function splitSentences(text) {
     split.push(...parts);
   }
 
-  // 3) 너무 짧은 조각(<20자)은 앞/뒤와 합쳐서 TTS가 억양·연음을 자연스럽게 처리하도록 한다.
-  const MIN = 20, MAX = 260;
+  // 3) 너무 짧은 조각은 앞/뒤와 합친다 — 운율·연음 정보 부족으로 뭉개지는 것 방지.
   const merged = [];
   for (const s of split) {
     const last = merged[merged.length - 1];
@@ -629,7 +663,6 @@ function splitSentences(text) {
       merged.push(s);
     }
   }
-  // 마지막 조각이 너무 짧으면 앞과 합친다.
   if (merged.length >= 2 && merged[merged.length - 1].length < MIN) {
     merged[merged.length - 2] += ' ' + merged.pop();
   }
@@ -694,19 +727,31 @@ async function speakST(text) {
   const ok = await ensurePipeline();
   if (!ok || !isPlaying) return;
 
-  const sentences = splitSentences(text).filter(s => /[\p{L}\p{N}]/u.test(s));
+  const sentences = splitSentences(text, 'supertonic')
+    .map(normalizeForSupertonic)
+    .filter(s => /[\p{L}\p{N}]/u.test(s));
   const voice = document.getElementById('voice-select').value || 'F1';
+
+  // Supertonic: 속도 1.5 초과 시 음질 급락 → 내부적으로 클램프하되 UI 알림
+  const clampSpeed = () => {
+    const raw = parseFloat(document.getElementById('rate').value);
+    if (raw > 1.5) {
+      setStatus('Supertonic은 1.5배속을 초과하면 발음이 뭉개질 수 있어 1.5로 제한합니다.');
+      return 1.5;
+    }
+    return raw;
+  };
 
   // 첫 문장 미리 fetch
   let nextBufPromise = sentences.length > 0
-    ? fetchTTS(sentences[0], voice, parseFloat(document.getElementById('rate').value)).catch(() => null)
+    ? fetchTTS(sentences[0], voice, clampSpeed()).catch(() => null)
     : null;
 
   for (let i = 0; i < sentences.length; i++) {
     if (!isPlaying) return;
 
     const volume = parseFloat(document.getElementById('volume').value);
-    const speed  = parseFloat(document.getElementById('rate').value);
+    const speed  = clampSpeed();
 
     // 현재 문장 버퍼 대기
     const audioBuf = await nextBufPromise;
