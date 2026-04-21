@@ -536,7 +536,15 @@ function speakWS(text, onEnd) {
 }
 
 function splitSentences(text) {
-  return text.split(/(?<=[.!?。！？])\s+/).filter(s => s.trim().length > 0);
+  // 문장 부호 또는 줄바꿈으로 분리, 50자 초과 청크는 쉼표로 추가 분리
+  const raw = text.split(/(?<=[.!?。！？다요](?:\s|$))|[\n]/).filter(s => s.trim().length > 0);
+  const chunks = [];
+  for (const s of raw) {
+    if (s.length <= 80) { chunks.push(s); continue; }
+    const sub = s.split(/(?<=[,，、])\s*/).filter(x => x.trim().length > 0);
+    chunks.push(...sub);
+  }
+  return chunks;
 }
 
 // ================================================================
@@ -584,23 +592,28 @@ async function speakST(text) {
   const ok = await ensurePipeline();
   if (!ok || !isPlaying) return;
 
-  const voiceId = document.getElementById('voice-select').value || 'F1';
-  const speed = parseFloat(document.getElementById('rate').value);
-  const volume = parseFloat(document.getElementById('volume').value);
+  const sentences = splitSentences(text);
+  const speakerUrl = `https://huggingface.co/onnx-community/Supertonic-TTS-2-ONNX/resolve/main/voices/${document.getElementById('voice-select').value || 'F1'}.bin`;
 
-  try {
-    const wrappedText = `<ko>${text}</ko>`;
-    const speakerUrl = `https://huggingface.co/onnx-community/Supertonic-TTS-2-ONNX/resolve/main/voices/${voiceId}.bin`;
-    const result = await transformersPipeline(wrappedText, {
-      speaker_embeddings: speakerUrl,
-      num_inference_steps: 5,
-      speed: speed,
-    });
+  for (const sentence of sentences) {
     if (!isPlaying) return;
-    await playAudioBuffer(result.audio, result.sampling_rate, volume);
-  } catch (e) {
-    console.error('Supertonic speak error:', e);
-    setStatus(`재생 오류: ${e.message}`);
+    if (!sentence.trim()) continue;
+
+    const speed = parseFloat(document.getElementById('rate').value);
+    const volume = parseFloat(document.getElementById('volume').value);
+
+    try {
+      const result = await transformersPipeline(`<ko>${sentence.trim()}</ko>`, {
+        speaker_embeddings: speakerUrl,
+        num_inference_steps: 5,
+        speed: speed,
+      });
+      if (!isPlaying) return;
+      await playAudioBuffer(result.audio, result.sampling_rate, volume);
+    } catch (e) {
+      console.error('Supertonic speak error:', e);
+      setStatus(`재생 오류: ${e.message}`);
+    }
   }
 }
 
