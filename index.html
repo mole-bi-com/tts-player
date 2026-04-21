@@ -460,11 +460,13 @@ window.onVoiceChange = function() {
 //  재생 컨트롤
 // ================================================================
 window.playAll = function() {
+  ensureAudioCtx();
   stopAll();
   playFrom(0);
 };
 
 window.playSelected = function() {
+  ensureAudioCtx();
   stopAll();
   playFrom(currentIndex >= 0 ? currentIndex : 0);
 };
@@ -632,9 +634,16 @@ async function speakST(text) {
   }
 }
 
-function playAudioBuffer(audioData, sampleRate, volume) {
+function ensureAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  // 모바일 Chrome은 AudioContext가 suspended 상태로 시작됨 — resume 필요
+  if (audioCtx.state === 'suspended') return audioCtx.resume();
+  return Promise.resolve();
+}
+
+async function playAudioBuffer(audioData, sampleRate, volume) {
+  await ensureAudioCtx();
   return new Promise((resolve) => {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const buf = audioCtx.createBuffer(1, audioData.length, sampleRate);
     buf.copyToChannel(audioData instanceof Float32Array ? audioData : new Float32Array(audioData), 0);
     const src = audioCtx.createBufferSource();
