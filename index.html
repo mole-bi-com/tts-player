@@ -578,9 +578,9 @@ function splitSentences(text) {
 }
 
 // ================================================================
-//  Supertonic 엔진
+//  Supertonic 엔진 (서버 API 경유 — 모바일 OOM 회피)
 // ================================================================
-let transformersPipeline = null;
+const TTS_API = 'https://swoosh77-supertonic-tts-api.hf.space';
 let pipelineReady = false;
 
 async function ensurePipeline() {
@@ -590,48 +590,21 @@ async function ensurePipeline() {
     return pipelineReady;
   }
   pipelineLoading = true;
-  setStatus('Supertonic 모델 다운로드 중... (첫 실행 시 수백MB, 이후 캐시됩니다)');
+  setStatus('Supertonic 서버 워밍업 중... (첫 요청 시 최대 1분)');
   try {
-    const { pipeline: createPipeline, env } = await import(
-      'https://unpkg.com/@huggingface/transformers@3.8.1/dist/transformers.min.js'
-    );
-    env.allowRemoteModels = true;
-    // 모바일: 양자화된 작은 모델 + 가능 시 WebGPU로 OOM 방지
-    const hasWebGPU = 'gpu' in navigator;
-    const pipelineOpts = {
-      dtype: isMobile ? 'q4' : 'q8',  // 모바일은 더 공격적으로 양자화 (~65MB)
-      device: hasWebGPU ? 'webgpu' : 'wasm',
-      progress_callback: (p) => {
-        if (p.status === 'progress' && p.total) {
-          const pct = Math.round((p.loaded / p.total) * 100);
-          setStatus(`모델 로딩 중: ${p.file || ''} ${pct}%`);
-        }
-      }
-    };
-    setStatus(`Supertonic 모델 로딩 (${pipelineOpts.dtype}, ${pipelineOpts.device})...`);
-    try {
-      transformersPipeline = await createPipeline(
-        'text-to-speech',
-        'onnx-community/Supertonic-TTS-2-ONNX',
-        pipelineOpts
-      );
-    } catch (err) {
-      // 지정한 dtype/device 실패 시 fp32 + wasm 기본값으로 재시도
-      console.warn('quantized load failed, fallback:', err);
-      setStatus('양자화 모델 실패, 기본 모델 재시도...');
-      transformersPipeline = await createPipeline(
-        'text-to-speech',
-        'onnx-community/Supertonic-TTS-2-ONNX',
-        { progress_callback: pipelineOpts.progress_callback }
-      );
-    }
+    // 콜드스타트 대응: warmup 엔드포인트 호출 (타임아웃 90초)
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 90000);
+    const res = await fetch(`${TTS_API}/warmup`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) throw new Error(`warmup failed: HTTP ${res.status}`);
     pipelineReady = true;
     setStatus('');
     pipelineLoading = false;
     return true;
   } catch (e) {
-    console.error('Supertonic load error:', e);
-    setStatus(`Supertonic 로드 실패: ${e.message} — Web Speech로 전환하세요`);
+    console.error('Supertonic warmup error:', e);
+    setStatus(`서버 연결 실패: ${e.message} — Web Speech로 전환하세요`);
     pipelineLoading = false;
     return false;
   }
@@ -642,7 +615,7 @@ async function speakST(text) {
   if (!ok || !isPlaying) return;
 
   const sentences = splitSentences(text);
-  const speakerUrl = `https://huggingface.co/onnx-community/Supertonic-TTS-2-ONNX/resolve/main/voices/${document.getElementById('voice-select').value || 'F1'}.bin`;
+  const voice = document.getElementById('voice-select').value || 'F1';
 
   for (const sentence of sentences) {
     if (!isPlaying) return;
@@ -652,21 +625,39 @@ async function speakST(text) {
     const volume = parseFloat(document.getElementById('volume').value);
 
     try {
-      // 30초 이내 완료 안 되면 다음 문장으로 건너뜀
-      const result = await withTimeout(transformersPipeline(`<ko>${sentence.trim()}</ko>`, {
-        speaker_embeddings: speakerUrl,
-        num_inference_steps: 5,
-        speed: speed,
-      }), 30000);
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 60000);
+      const res = await fetch(`${TTS_API}/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: sentence.trim(), voice, speed }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(t);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const wavBuf = await res.arrayBuffer();
       if (!isPlaying) return;
-      // 추론 중 suspended 됐을 수 있으므로 재생 직전 resume
       await ensureAudioCtx();
-      await playAudioBuffer(result.audio, result.sampling_rate, volume);
+      const audioBuf = await audioCtx.decodeAudioData(wavBuf);
+      await playDecodedBuffer(audioBuf, volume);
     } catch (e) {
       console.error('Supertonic speak error:', e);
       setStatus(`재생 오류: ${e.message}`);
     }
   }
+}
+
+function playDecodedBuffer(audioBuf, volume) {
+  return new Promise((resolve) => {
+    const src = audioCtx.createBufferSource();
+    src.buffer = audioBuf;
+    const gain = audioCtx.createGain();
+    gain.gain.value = volume;
+    src.connect(gain); gain.connect(audioCtx.destination);
+    currentSource = src;
+    src.onended = () => { currentSource = null; resolve(); };
+    src.start();
+  });
 }
 
 function ensureAudioCtx() {
