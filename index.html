@@ -313,19 +313,24 @@ window.switchEngine = function(eng) {
 //  텍스트 로드 & 렌더링
 // ================================================================
 window.loadText = function() {
-  const raw = document.getElementById('text-input').value.trim();
-  if (!raw) return;
+  try {
+    const raw = document.getElementById('text-input').value.trim();
+    if (!raw) return;
 
-  stopAll();
-  paragraphs = raw.split(/\n\n+/).map(p => p.trim()).filter(p => p.length > 3);
-  currentIndex = -1;
-  playingIndex = -1;
+    try { stopAll(); } catch(e) {}
+    paragraphs = raw.split(/\n\n+/).map(p => p.trim()).filter(p => p.length > 3);
+    currentIndex = -1;
+    playingIndex = -1;
 
-  renderParagraphs();
-  document.getElementById('controls').style.display = 'flex';
-  document.getElementById('empty-state')?.remove();
-  document.getElementById('input-section').style.marginBottom = '0';
-  buildVoiceList();
+    renderParagraphs();
+    document.getElementById('controls').style.display = 'flex';
+    document.getElementById('empty-state')?.remove();
+    document.getElementById('input-section').style.marginBottom = '0';
+    buildVoiceList();
+  } catch(e) {
+    setStatus('로드 오류: ' + e.message);
+    console.error('loadText error:', e);
+  }
 };
 
 function renderParagraphs() {
