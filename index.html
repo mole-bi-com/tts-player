@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TTS 플레이어</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f1117;
+      color: #e0e0e0;
+      font-family: 'Noto Sans KR', 'Malgun Gothic', sans-serif;
+      font-size: 16px;
+      line-height: 1.8;
+      min-height: 100vh;
+    }
+
+    /* ── 헤더 ── */
+    #header {
+      background: #13151f;
+      border-bottom: 1px solid #2a2d3a;
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    #header h1 { font-size: 16px; color: #aabbff; font-weight: 600; letter-spacing: 0.03em; }
+    #engine-toggle {
+      margin-left: auto;
+      display: flex;
+      background: #1e2130;
+      border: 1px solid #3a3d4a;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .engine-btn {
+      padding: 6px 14px;
+      font-size: 13px;
+      border: none;
+      background: transparent;
+      color: #778899;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .engine-btn.active { background: #2a3566; color: #aabbff; }
+
+    /* ── 상태 배너 ── */
+    #status-banner {
+      display: none;
+      background: #1a1d2e;
+      border-bottom: 1px solid #2a2d3a;
+      padding: 8px 20px;
+      font-size: 13px;
+      color: #8899cc;
+      text-align: center;
+    }
+
+    /* ── 입력 영역 ── */
+    #input-section {
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 24px 20px 12px;
+    }
+    #input-section label {
+      display: block;
+      font-size: 13px;
+      color: #6677aa;
+      margin-bottom: 8px;
+    }
+    #text-input {
+      width: 100%;
+      height: 160px;
+      background: #1a1d27;
+      border: 1px solid #2a2d3a;
+      border-radius: 8px;
+      color: #ddeeff;
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.7;
+      padding: 12px 14px;
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    #text-input:focus { border-color: #4455aa; }
+    #text-input::placeholder { color: #3a4060; }
+    #load-btn {
+      margin-top: 10px;
+      background: #2a3566;
+      border: 1px solid #4455aa;
+      color: #aabbff;
+      padding: 8px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+    #load-btn:hover { background: #3344aa; color: white; }
+
+    /* ── 컨트롤 패널 ── */
+    #controls {
+      position: sticky;
+      top: 0;
+      background: #1a1d27;
+      border-bottom: 1px solid #2a2d3a;
+      padding: 10px 20px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      z-index: 100;
+    }
+    .ctrl-btn {
+      background: #1e2438;
+      border: 1px solid #3a4470;
+      color: #99aade;
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+    .ctrl-btn:hover { background: #2a3566; color: #ccdaff; }
+    .ctrl-btn:disabled { opacity: 0.35; cursor: default; }
+    .slider-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: #778899;
+    }
+    .slider-group.disabled { opacity: 0.35; pointer-events: none; }
+    input[type=range] { width: 72px; accent-color: #5566cc; }
+    #voice-select {
+      background: #1e2130;
+      border: 1px solid #3a3d4a;
+      color: #99aade;
+      padding: 5px 8px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: inherit;
+      max-width: 200px;
+    }
+
+    /* ── 섹션 네비 ── */
+    #section-nav {
+      padding: 6px 20px;
+      background: #13151f;
+      border-bottom: 1px solid #2a2d3a;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    #section-nav:empty { display: none; }
+    .section-btn {
+      background: #1e2130;
+      border: 1px solid #3a3d4a;
+      color: #7788bb;
+      padding: 3px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-family: inherit;
+    }
+    .section-btn:hover { background: #2a2d40; color: #aabbee; }
+
+    /* ── 본문 ── */
+    #content {
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 16px 20px 60px;
+    }
+    .para-block {
+      padding: 10px 14px;
+      margin: 4px 0;
+      border-radius: 6px;
+      border-left: 3px solid transparent;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .para-block:hover { background: #1a1d2a; border-left-color: #3344aa; }
+    .para-block.selected { background: #1e2235; border-left-color: #5566cc; }
+    .para-block.playing { background: #162218; border-left-color: #44aa66; }
+
+    .para-h1 { font-size: 1.45em; font-weight: bold; color: #ccdaff; margin-top: 22px; cursor: default; }
+    .para-h2 { font-size: 1.2em; font-weight: bold; color: #aabbee; margin-top: 16px; }
+    .para-h3 { font-size: 1.05em; font-weight: bold; color: #99aadd; margin-top: 10px; }
+
+    /* ── 진행바 ── */
+    #progress-bar {
+      position: fixed;
+      top: 0; left: 0;
+      height: 2px;
+      background: linear-gradient(90deg, #4455cc, #66aaff);
+      transition: width 0.3s;
+      z-index: 999;
+    }
+
+    /* ── 빈 상태 ── */
+    #empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #3a4060;
+      font-size: 15px;
+    }
+    #empty-state span { font-size: 40px; display: block; margin-bottom: 14px; opacity: 0.5; }
+
+    /* ── 반응형 ── */
+    @media (max-width: 600px) {
+      #controls { gap: 6px; }
+      .ctrl-btn { padding: 5px 10px; font-size: 13px; }
+      input[type=range] { width: 56px; }
+    }
+  </style>
+</head>
+<body>
+
+<div id="progress-bar" style="width:0%"></div>
+
+<!-- 헤더 -->
+<div id="header">
+  <h1>🔊 TTS 플레이어</h1>
+  <div id="engine-toggle">
+    <button class="engine-btn active" id="btn-webspeech" onclick="switchEngine('webspeech')">🌐 Web Speech</button>
+    <button class="engine-btn" id="btn-supertonic" onclick="switchEngine('supertonic')">✨ Supertonic</button>
+  </div>
+</div>
+
+<!-- 상태 배너 -->
+<div id="status-banner"></div>
+
+<!-- 텍스트 입력 -->
+<div id="input-section">
+  <label>텍스트 또는 마크다운을 붙여넣고 로드 버튼을 누르세요</label>
+  <textarea id="text-input" placeholder="여기에 텍스트를 붙여넣으세요...&#10;&#10;마크다운 헤딩(# ## ###)도 지원합니다.&#10;빈 줄로 문단을 구분합니다."></textarea>
+  <button id="load-btn" onclick="loadText()">▶ 텍스트 로드</button>
+</div>
+
+<!-- 컨트롤 패널 -->
+<div id="controls" style="display:none">
+  <button class="ctrl-btn" onclick="playAll()">▶ 전체 재생</button>
+  <button class="ctrl-btn" onclick="playSelected()">↩ 여기서부터</button>
+  <button class="ctrl-btn" onclick="pauseResume()">⏸ 일시정지</button>
+  <button class="ctrl-btn" onclick="stopAll()">⏹ 정지</button>
+  <select id="voice-select" onchange="onVoiceChange()">
+    <option value="">— 음성 선택 —</option>
+  </select>
+  <div class="slider-group" id="sg-rate">
+    속도 <input type="range" id="rate" min="0.5" max="2.5" step="0.1" value="1.0"
+      oninput="document.getElementById('rate-val').textContent=parseFloat(this.value).toFixed(1)">
+    <span id="rate-val">1.0</span>
+  </div>
+  <div class="slider-group" id="sg-pitch">
+    음높이 <input type="range" id="pitch" min="0.5" max="2" step="0.1" value="1.0"
+      oninput="document.getElementById('pitch-val').textContent=parseFloat(this.value).toFixed(1)">
+    <span id="pitch-val">1.0</span>
+  </div>
+  <div class="slider-group">
+    음량 <input type="range" id="volume" min="0" max="1" step="0.05" value="1.0"
+      oninput="document.getElementById('vol-val').textContent=parseFloat(this.value).toFixed(2)">
+    <span id="vol-val">1.00</span>
+  </div>
+</div>
+
+<!-- 섹션 네비 -->
+<div id="section-nav"></div>
+
+<!-- 본문 -->
+<div id="content">
+  <div id="empty-state">
+    <span>📄</span>
+    위 입력창에 텍스트를 붙여넣고 로드하세요
+  </div>
+</div>
+
+<script type="module">
+// ================================================================
+//  엔진 상태
+// ================================================================
+let engine = 'webspeech';   // 'webspeech' | 'supertonic'
+let paragraphs = [];
+let currentIndex = -1;
+let playingIndex = -1;
+let isPlaying = false;
+let isPaused = false;
+
+// Supertonic 관련
+let pipeline = null;
+let pipelineLoading = false;
+let audioQueue = [];
+let audioCtx = null;
+let currentSource = null;
+let selectedVoice = null; // Web Speech용
+
+// ================================================================
+//  엔진 전환
+// ================================================================
+window.switchEngine = function(eng) {
+  engine = eng;
+  stopAll();
+  document.getElementById('btn-webspeech').classList.toggle('active', eng === 'webspeech');
+  document.getElementById('btn-supertonic').classList.toggle('active', eng === 'supertonic');
+  document.getElementById('sg-pitch').classList.toggle('disabled', eng === 'supertonic');
+  buildVoiceList();
+};
+
+// ================================================================
+//  텍스트 로드 & 렌더링
+// ================================================================
+window.loadText = function() {
+  const raw = document.getElementById('text-input').value.trim();
+  if (!raw) return;
+
+  stopAll();
+  paragraphs = raw.split(/\n\n+/).map(p => p.trim()).filter(p => p.length > 3);
+  currentIndex = -1;
+  playingIndex = -1;
+
+  renderParagraphs();
+  document.getElementById('controls').style.display = 'flex';
+  document.getElementById('empty-state')?.remove();
+  document.getElementById('input-section').style.marginBottom = '0';
+  buildVoiceList();
+};
+
+function renderParagraphs() {
+  const content = document.getElementById('content');
+  const nav = document.getElementById('section-nav');
+  content.innerHTML = '';
+  nav.innerHTML = '';
+
+  paragraphs.forEach((p, i) => {
+    const div = document.createElement('div');
+    div.className = 'para-block';
+    div.id = `p${i}`;
+
+    if (p.startsWith('### ')) {
+      div.classList.add('para-h3');
+      div.textContent = p.replace(/^### /, '');
+    } else if (p.startsWith('## ')) {
+      div.classList.add('para-h2');
+      div.textContent = p.replace(/^## /, '');
+      const btn = document.createElement('button');
+      btn.className = 'section-btn';
+      btn.textContent = p.replace(/^## /, '').slice(0, 22);
+      btn.onclick = () => { selectParagraph(i); div.scrollIntoView({ behavior: 'smooth' }); };
+      nav.appendChild(btn);
+    } else if (p.startsWith('# ')) {
+      div.classList.add('para-h1');
+      div.textContent = p.replace(/^# /, '');
+    } else {
+      div.innerHTML = p
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        .replace(/`(.*?)`/g, '<code>$1</code>');
+    }
+
+    div.onclick = () => selectParagraph(i);
+    content.appendChild(div);
+  });
+}
+
+function selectParagraph(i) {
+  document.getElementById(`p${currentIndex}`)?.classList.remove('selected');
+  currentIndex = i;
+  document.getElementById(`p${i}`)?.classList.add('selected');
+}
+
+// ================================================================
+//  음성 목록 구성
+// ================================================================
+function buildVoiceList() {
+  const sel = document.getElementById('voice-select');
+  sel.innerHTML = '';
+
+  if (engine === 'webspeech') {
+    const voices = speechSynthesis.getVoices().filter(v =>
+      v.lang.startsWith('ko') || v.lang.startsWith('en')
+    );
+    if (voices.length === 0) {
+      sel.innerHTML = '<option value="">음성 로딩 중...</option>';
+      speechSynthesis.onvoiceschanged = buildVoiceList;
+      return;
+    }
+    // 품질 점수
+    const score = v => {
+      let s = 0;
+      if (v.lang.startsWith('ko')) s += 10;
+      const n = v.name.toLowerCase();
+      if (n.includes('neural') || n.includes('natural')) s += 5;
+      if (n.includes('sunhi') || n.includes('injoon') || n.includes('heami')) s += 4;
+      if (!v.localService) s += 2; // 클라우드
+      return s;
+    };
+    const sorted = voices.sort((a, b) => score(b) - score(a));
+    const opt0 = document.createElement('option');
+    opt0.value = ''; opt0.textContent = '— 음성 선택 —';
+    sel.appendChild(opt0);
+    sorted.forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v.name;
+      const tag = v.lang.startsWith('ko') ? '🇰🇷 ' : '🇺🇸 ';
+      const q = score(v) >= 14 ? ' ⭐' : '';
+      const cloud = !v.localService ? ' ☁️' : ' 💻';
+      opt.textContent = tag + v.name + cloud + q;
+      sel.appendChild(opt);
+    });
+    // 최고 품질 자동 선택
+    if (sorted.length > 0) {
+      sel.value = sorted[0].name;
+      selectedVoice = sorted[0];
+    }
+  } else {
+    // Supertonic 음성 목록
+    const voices = [
+      { id: 'F1', label: '여성 1 (F1)' }, { id: 'F2', label: '여성 2 (F2)' },
+      { id: 'F3', label: '여성 3 (F3)' }, { id: 'F4', label: '여성 4 (F4)' },
+      { id: 'F5', label: '여성 5 (F5)' },
+      { id: 'M1', label: '남성 1 (M1)' }, { id: 'M2', label: '남성 2 (M2)' },
+      { id: 'M3', label: '남성 3 (M3)' }, { id: 'M4', label: '남성 4 (M4)' },
+      { id: 'M5', label: '남성 5 (M5)' },
+    ];
+    const opt0 = document.createElement('option');
+    opt0.value = ''; opt0.textContent = '— 음성 선택 —';
+    sel.appendChild(opt0);
+    voices.forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v.id; opt.textContent = v.id.startsWith('F') ? '👩 ' + v.label : '👨 ' + v.label;
+      sel.appendChild(opt);
+    });
+  }
+}
+
+window.onVoiceChange = function() {
+  const sel = document.getElementById('voice-select');
+  if (engine === 'webspeech') {
+    selectedVoice = speechSynthesis.getVoices().find(v => v.name === sel.value) || null;
+  }
+};
+
+// ================================================================
+//  재생 컨트롤
+// ================================================================
+window.playAll = function() {
+  stopAll();
+  playFrom(0);
+};
+
+window.playSelected = function() {
+  stopAll();
+  playFrom(currentIndex >= 0 ? currentIndex : 0);
+};
+
+window.stopAll = function() {
+  isPlaying = false;
+  isPaused = false;
+  if (engine === 'webspeech') {
+    speechSynthesis.cancel();
+  } else {
+    stopSupertonic();
+  }
+  document.querySelectorAll('.para-block.playing').forEach(el => el.classList.remove('playing'));
+  document.getElementById('progress-bar').style.width = '0%';
+  playingIndex = -1;
+};
+
+window.pauseResume = function() {
+  if (engine === 'webspeech') {
+    if (speechSynthesis.paused) { speechSynthesis.resume(); isPaused = false; }
+    else { speechSynthesis.pause(); isPaused = true; }
+  } else {
+    if (currentSource) {
+      // Web Audio pause not straightforward; stop and note position
+      stopSupertonic();
+      isPaused = true;
+    } else if (isPaused) {
+      isPaused = false;
+      playFrom(playingIndex >= 0 ? playingIndex : 0);
+    }
+  }
+};
+
+async function playFrom(idx) {
+  if (idx >= paragraphs.length) { isPlaying = false; return; }
+  isPlaying = true;
+  playingIndex = idx;
+
+  // UI
+  document.querySelectorAll('.para-block.playing').forEach(el => el.classList.remove('playing'));
+  const el = document.getElementById(`p${idx}`);
+  el?.classList.add('playing');
+  el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  document.getElementById('progress-bar').style.width =
+    Math.round((idx / paragraphs.length) * 100) + '%';
+
+  const text = getPlainText(paragraphs[idx]);
+  if (!text.trim()) { if (isPlaying) playFrom(idx + 1); return; }
+
+  if (engine === 'webspeech') {
+    speakWS(text, () => { if (isPlaying) playFrom(idx + 1); });
+  } else {
+    await speakST(text);
+    if (isPlaying) playFrom(idx + 1);
+  }
+}
+
+function getPlainText(p) {
+  return p.replace(/^#{1,3} /, '')
+          .replace(/\*\*(.*?)\*\*/g, '$1')
+          .replace(/\*(.*?)\*/g, '$1')
+          .replace(/`(.*?)`/g, '$1');
+}
+
+// ================================================================
+//  Web Speech API 엔진
+// ================================================================
+function speakWS(text, onEnd) {
+  const sentences = splitSentences(text);
+  let i = 0;
+  function next() {
+    if (!isPlaying || i >= sentences.length) { if (i >= sentences.length) onEnd?.(); return; }
+    const utter = new SpeechSynthesisUtterance(sentences[i++]);
+    utter.lang = 'ko-KR';
+    utter.rate   = parseFloat(document.getElementById('rate').value);
+    utter.pitch  = parseFloat(document.getElementById('pitch').value);
+    utter.volume = parseFloat(document.getElementById('volume').value);
+    if (selectedVoice) utter.voice = selectedVoice;
+    utter.onend = next;
+    utter.onerror = next;
+    speechSynthesis.speak(utter);
+  }
+  next();
+}
+
+function splitSentences(text) {
+  return text.split(/(?<=[.!?。！？])\s+/).filter(s => s.trim().length > 0);
+}
+
+// ================================================================
+//  Supertonic 엔진
+// ================================================================
+let transformersPipeline = null;
+let pipelineReady = false;
+
+async function ensurePipeline() {
+  if (pipelineReady) return true;
+  if (pipelineLoading) {
+    await new Promise(r => { const t = setInterval(() => { if (!pipelineLoading) { clearInterval(t); r(); } }, 200); });
+    return pipelineReady;
+  }
+  pipelineLoading = true;
+  setStatus('Supertonic 모델 다운로드 중... (첫 실행 시 수백MB, 이후 캐시됩니다)');
+  try {
+    const { pipeline: createPipeline, env } = await import(
+      'https://unpkg.com/@huggingface/transformers@3.8.1/dist/transformers.min.js'
+    );
+    env.allowRemoteModels = true;
+    transformersPipeline = await createPipeline(
+      'text-to-speech',
+      'onnx-community/Supertonic-TTS-2-ONNX',
+      { progress_callback: (p) => {
+        if (p.status === 'progress' && p.total) {
+          const pct = Math.round((p.loaded / p.total) * 100);
+          setStatus(`모델 로딩 중: ${p.file || ''} ${pct}%`);
+        }
+      }}
+    );
+    pipelineReady = true;
+    setStatus('');
+    pipelineLoading = false;
+    return true;
+  } catch (e) {
+    console.error('Supertonic load error:', e);
+    setStatus(`Supertonic 로드 실패: ${e.message} — Web Speech로 전환하세요`);
+    pipelineLoading = false;
+    return false;
+  }
+}
+
+async function speakST(text) {
+  const ok = await ensurePipeline();
+  if (!ok || !isPlaying) return;
+
+  const voiceId = document.getElementById('voice-select').value || 'F1';
+  const speed = parseFloat(document.getElementById('rate').value);
+  const volume = parseFloat(document.getElementById('volume').value);
+
+  try {
+    const wrappedText = `<ko>${text}</ko>`;
+    const speakerUrl = `https://huggingface.co/onnx-community/Supertonic-TTS-2-ONNX/resolve/main/voices/${voiceId}.bin`;
+    const result = await transformersPipeline(wrappedText, {
+      speaker_embeddings: speakerUrl,
+      num_inference_steps: 5,
+      speed: speed,
+    });
+    if (!isPlaying) return;
+    await playAudioBuffer(result.audio, result.sampling_rate, volume);
+  } catch (e) {
+    console.error('Supertonic speak error:', e);
+    setStatus(`재생 오류: ${e.message}`);
+  }
+}
+
+function playAudioBuffer(audioData, sampleRate, volume) {
+  return new Promise((resolve) => {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const buf = audioCtx.createBuffer(1, audioData.length, sampleRate);
+    buf.copyToChannel(audioData instanceof Float32Array ? audioData : new Float32Array(audioData), 0);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const gainNode = audioCtx.createGain();
+    gainNode.gain.value = volume;
+    src.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    currentSource = src;
+    src.onended = () => { currentSource = null; resolve(); };
+    src.start();
+  });
+}
+
+function stopSupertonic() {
+  if (currentSource) {
+    try { currentSource.stop(); } catch(e) {}
+    currentSource = null;
+  }
+}
+
+function setStatus(msg) {
+  const el = document.getElementById('status-banner');
+  if (msg) { el.textContent = msg; el.style.display = 'block'; }
+  else { el.style.display = 'none'; }
+}
+
+// ================================================================
+//  초기화
+// ================================================================
+speechSynthesis.onvoiceschanged = () => {
+  if (engine === 'webspeech') buildVoiceList();
+};
+buildVoiceList();
+</script>
+</body>
+</html>
