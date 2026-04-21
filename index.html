@@ -610,35 +610,57 @@ async function ensurePipeline() {
   }
 }
 
+async function fetchTTS(sentence, voice, speed) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 60000);
+  try {
+    const res = await fetch(`${TTS_API}/tts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: sentence.trim(), voice, speed }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const wavBuf = await res.arrayBuffer();
+    await ensureAudioCtx();
+    return await audioCtx.decodeAudioData(wavBuf);
+  } catch(e) {
+    clearTimeout(t);
+    throw e;
+  }
+}
+
 async function speakST(text) {
   const ok = await ensurePipeline();
   if (!ok || !isPlaying) return;
 
-  const sentences = splitSentences(text);
+  const sentences = splitSentences(text).filter(s => s.trim());
   const voice = document.getElementById('voice-select').value || 'F1';
 
-  for (const sentence of sentences) {
-    if (!isPlaying) return;
-    if (!sentence.trim()) continue;
+  // 첫 문장 미리 fetch
+  let nextBufPromise = sentences.length > 0
+    ? fetchTTS(sentences[0], voice, parseFloat(document.getElementById('rate').value)).catch(() => null)
+    : null;
 
-    const speed = parseFloat(document.getElementById('rate').value);
+  for (let i = 0; i < sentences.length; i++) {
+    if (!isPlaying) return;
+
     const volume = parseFloat(document.getElementById('volume').value);
+    const speed  = parseFloat(document.getElementById('rate').value);
+
+    // 현재 문장 버퍼 대기
+    const audioBuf = await nextBufPromise;
+
+    // 다음 문장 즉시 프리페치 시작 (재생과 병렬)
+    nextBufPromise = (i + 1 < sentences.length)
+      ? fetchTTS(sentences[i + 1], voice, speed).catch(() => null)
+      : null;
+
+    if (!isPlaying) return;
+    if (!audioBuf) continue; // fetch 실패 시 건너뜀
 
     try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 60000);
-      const res = await fetch(`${TTS_API}/tts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: sentence.trim(), voice, speed }),
-        signal: ctrl.signal,
-      });
-      clearTimeout(t);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const wavBuf = await res.arrayBuffer();
-      if (!isPlaying) return;
-      await ensureAudioCtx();
-      const audioBuf = await audioCtx.decodeAudioData(wavBuf);
       await playDecodedBuffer(audioBuf, volume);
     } catch (e) {
       console.error('Supertonic speak error:', e);
