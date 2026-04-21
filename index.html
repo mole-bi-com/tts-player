@@ -302,6 +302,8 @@ let keepaliveTimer = null;
 // ================================================================
 //  엔진 전환
 // ================================================================
+const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
 window.switchEngine = function(eng) {
   engine = eng;
   stopAll();
@@ -594,16 +596,35 @@ async function ensurePipeline() {
       'https://unpkg.com/@huggingface/transformers@3.8.1/dist/transformers.min.js'
     );
     env.allowRemoteModels = true;
-    transformersPipeline = await createPipeline(
-      'text-to-speech',
-      'onnx-community/Supertonic-TTS-2-ONNX',
-      { progress_callback: (p) => {
+    // 모바일: 양자화된 작은 모델 + 가능 시 WebGPU로 OOM 방지
+    const hasWebGPU = 'gpu' in navigator;
+    const pipelineOpts = {
+      dtype: isMobile ? 'q4' : 'q8',  // 모바일은 더 공격적으로 양자화 (~65MB)
+      device: hasWebGPU ? 'webgpu' : 'wasm',
+      progress_callback: (p) => {
         if (p.status === 'progress' && p.total) {
           const pct = Math.round((p.loaded / p.total) * 100);
           setStatus(`모델 로딩 중: ${p.file || ''} ${pct}%`);
         }
-      }}
-    );
+      }
+    };
+    setStatus(`Supertonic 모델 로딩 (${pipelineOpts.dtype}, ${pipelineOpts.device})...`);
+    try {
+      transformersPipeline = await createPipeline(
+        'text-to-speech',
+        'onnx-community/Supertonic-TTS-2-ONNX',
+        pipelineOpts
+      );
+    } catch (err) {
+      // 지정한 dtype/device 실패 시 fp32 + wasm 기본값으로 재시도
+      console.warn('quantized load failed, fallback:', err);
+      setStatus('양자화 모델 실패, 기본 모델 재시도...');
+      transformersPipeline = await createPipeline(
+        'text-to-speech',
+        'onnx-community/Supertonic-TTS-2-ONNX',
+        { progress_callback: pipelineOpts.progress_callback }
+      );
+    }
     pipelineReady = true;
     setStatus('');
     pipelineLoading = false;
