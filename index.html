@@ -296,6 +296,8 @@ let audioQueue = [];
 let audioCtx = null;
 let currentSource = null;
 let selectedVoice = null; // Web Speech용
+let wakeLock = null;
+let keepaliveTimer = null;
 
 // ================================================================
 //  엔진 전환
@@ -462,18 +464,22 @@ window.onVoiceChange = function() {
 window.playAll = function() {
   ensureAudioCtx();
   stopAll();
+  if (engine === 'supertonic') { acquireWakeLock(); startKeepalive(); }
   playFrom(0);
 };
 
 window.playSelected = function() {
   ensureAudioCtx();
   stopAll();
+  if (engine === 'supertonic') { acquireWakeLock(); startKeepalive(); }
   playFrom(currentIndex >= 0 ? currentIndex : 0);
 };
 
 window.stopAll = function() {
   isPlaying = false;
   isPaused = false;
+  stopKeepalive();
+  releaseWakeLock();
   if (engine === 'webspeech') {
     speechSynthesis.cancel();
   } else {
@@ -501,7 +507,12 @@ window.pauseResume = function() {
 };
 
 async function playFrom(idx) {
-  if (idx >= paragraphs.length) { isPlaying = false; return; }
+  if (idx >= paragraphs.length) {
+    isPlaying = false;
+    stopKeepalive();
+    releaseWakeLock();
+    return;
+  }
   isPlaying = true;
   playingIndex = idx;
 
@@ -620,11 +631,12 @@ async function speakST(text) {
     const volume = parseFloat(document.getElementById('volume').value);
 
     try {
-      const result = await transformersPipeline(`<ko>${sentence.trim()}</ko>`, {
+      // 30초 이내 완료 안 되면 다음 문장으로 건너뜀
+      const result = await withTimeout(transformersPipeline(`<ko>${sentence.trim()}</ko>`, {
         speaker_embeddings: speakerUrl,
         num_inference_steps: 5,
         speed: speed,
-      });
+      }), 30000);
       if (!isPlaying) return;
       // 추론 중 suspended 됐을 수 있으므로 재생 직전 resume
       await ensureAudioCtx();
@@ -641,6 +653,44 @@ function ensureAudioCtx() {
   // 모바일 Chrome은 AudioContext가 suspended 상태로 시작됨 — resume 필요
   if (audioCtx.state === 'suspended') return audioCtx.resume();
   return Promise.resolve();
+}
+
+// 긴 추론 중 AudioContext suspend 방지 — 3초마다 1샘플 무음 재생
+function startKeepalive() {
+  stopKeepalive();
+  keepaliveTimer = setInterval(() => {
+    if (!audioCtx) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    try {
+      const buf = audioCtx.createBuffer(1, 1, 22050);
+      const s = audioCtx.createBufferSource();
+      s.buffer = buf; s.connect(audioCtx.destination); s.start();
+    } catch(e) {}
+  }, 3000);
+}
+function stopKeepalive() {
+  if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
+}
+
+// 화면 꺼짐 방지 (모바일 재생 안정성)
+async function acquireWakeLock() {
+  try {
+    if ('wakeLock' in navigator && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    }
+  } catch(e) { console.warn('wake lock failed:', e); }
+}
+function releaseWakeLock() {
+  if (wakeLock) { try { wakeLock.release(); } catch(e){} wakeLock = null; }
+}
+
+// 추론 타임아웃 (모바일에서 가끔 무한 대기하는 케이스 대응)
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('inference timeout')), ms))
+  ]);
 }
 
 async function playAudioBuffer(audioData, sampleRate, volume) {
