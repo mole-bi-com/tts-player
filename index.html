@@ -519,7 +519,7 @@ async function playFrom(idx) {
   if (engine === 'webspeech') {
     speakWS(text, () => { if (isPlaying) playFrom(idx + 1); });
   } else {
-    await speakST(text);
+    try { await speakST(text); } catch(e) { console.error('paragraph error:', e); }
     if (isPlaying) playFrom(idx + 1);
   }
 }
@@ -626,6 +626,8 @@ async function speakST(text) {
         speed: speed,
       });
       if (!isPlaying) return;
+      // 추론 중 suspended 됐을 수 있으므로 재생 직전 resume
+      await ensureAudioCtx();
       await playAudioBuffer(result.audio, result.sampling_rate, volume);
     } catch (e) {
       console.error('Supertonic speak error:', e);
@@ -674,6 +676,11 @@ function setStatus(msg) {
 // ================================================================
 //  초기화
 // ================================================================
+// 화면 복귀 시 AudioContext 자동 resume (모바일 백그라운드 대응)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && audioCtx) audioCtx.resume();
+});
+
 speechSynthesis.onvoiceschanged = () => {
   if (engine === 'webspeech') buildVoiceList();
 };
