@@ -864,9 +864,76 @@ function setStatus(msg) {
 // ================================================================
 //  초기화
 // ================================================================
-// 화면 복귀 시 AudioContext 자동 resume (모바일 백그라운드 대응)
+// 모바일 백그라운드 → 포그라운드 복귀 시 재생이 멎는 문제 대응:
+//  - Web Speech: speechSynthesis가 "zombie paused"에 빠지면 resume()이 안 먹음.
+//  - Web Audio:  AudioContext가 suspend되면서 현재 Source의 onended가 불발,
+//                재생 루프가 정지. currentSource는 재개 불가.
+//  - WakeLock:   탭 숨김 시 브라우저가 자동 release — 재취득 필요.
+// 복귀 후 실제로 정지됐는지 검사하고, 정지됐다면 현재 문단부터 깨끗하게 재시작.
+let wasActiveWhenHidden = false;
+let interruptedIdx = -1;
+let resumeTimer = null;
+
+async function handleVisibilityResume() {
+  try { if (audioCtx) await audioCtx.resume(); } catch(e) {}
+  if (!wasActiveWhenHidden) return;
+
+  // 포그라운드 복귀 직후 짧은 유예를 둬서 자연 재개되는 경우(백그라운드 시간이 짧아
+  // 엔진이 계속 이어가는 케이스)에 불필요한 재시작/중복 발화를 피한다.
+  clearTimeout(resumeTimer);
+  resumeTimer = setTimeout(() => {
+    if (!wasActiveWhenHidden) return;
+    if (!isPlaying || isPaused) { wasActiveWhenHidden = false; return; }
+
+    let stalled = false;
+    if (engine === 'webspeech') {
+      // 실제로 말하고 있지도, 대기 중이지도 않으면 좀비 상태.
+      stalled = !speechSynthesis.speaking && !speechSynthesis.pending;
+      // paused 상태면 먼저 resume 시도, 그래도 speaking 안 되면 stalled로 처리됨.
+      if (speechSynthesis.paused) { try { speechSynthesis.resume(); } catch(e) {} }
+    } else {
+      // Supertonic: currentSource가 없으면 재생 루프가 끊긴 것.
+      stalled = !currentSource;
+    }
+    if (!stalled) { wasActiveWhenHidden = false; return; }
+
+    const idx = interruptedIdx >= 0 ? interruptedIdx : (playingIndex >= 0 ? playingIndex : 0);
+    wasActiveWhenHidden = false;
+
+    // 기존 콜백들이 isPlaying=true를 보고 다시 진입하지 못하게 정지 플래그 선 세팅.
+    isPlaying = false;
+    try { speechSynthesis.cancel(); } catch(e) {}
+    stopSupertonic();
+
+    // 엔진 상태가 정리된 뒤 새 재생 시작.
+    setTimeout(() => {
+      if (engine === 'supertonic') { acquireWakeLock(); startKeepalive(); }
+      playFrom(idx);
+    }, 120);
+  }, 250);
+}
+
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && audioCtx) audioCtx.resume();
+  if (document.visibilityState === 'hidden') {
+    if (isPlaying && !isPaused) {
+      wasActiveWhenHidden = true;
+      interruptedIdx = playingIndex;
+    }
+    return;
+  }
+  // visible
+  if (isPlaying) acquireWakeLock(); // 숨김 중 자동 해제된 wake lock 재취득
+  handleVisibilityResume();
+});
+
+// iOS Safari는 BFCache 복귀 시 visibilitychange가 누락되는 경우가 있어 pageshow도 청취.
+window.addEventListener('pageshow', () => {
+  if (document.visibilityState === 'visible') handleVisibilityResume();
+});
+
+// 일부 안드로이드 Chrome에서 visibilitychange가 늦게 오는 경우 focus로 보강.
+window.addEventListener('focus', () => {
+  if (document.visibilityState === 'visible') handleVisibilityResume();
 });
 
 speechSynthesis.onvoiceschanged = () => {
