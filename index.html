@@ -492,19 +492,45 @@ window.onVoiceChange = function() {
 // ================================================================
 //  재생 컨트롤
 // ================================================================
-window.playAll = function() {
-  ensureAudioCtx();
+window.playAll = async function() {
+  await ensureAudioCtx();
   stopAll();
-  if (engine === 'supertonic') { acquireWakeLock(); startKeepalive(); }
+  acquireWakeLock();
+  setupMediaSession();
+  if (engine === 'supertonic') {
+    await ensureBackgroundAudio();  // 모바일 백그라운드 재생 점유
+    startKeepalive();
+  } else {
+    notifyWebSpeechBgLimit();
+  }
   playFrom(0);
 };
 
-window.playSelected = function() {
-  ensureAudioCtx();
+window.playSelected = async function() {
+  await ensureAudioCtx();
   stopAll();
-  if (engine === 'supertonic') { acquireWakeLock(); startKeepalive(); }
+  acquireWakeLock();
+  setupMediaSession();
+  if (engine === 'supertonic') {
+    await ensureBackgroundAudio();
+    startKeepalive();
+  } else {
+    notifyWebSpeechBgLimit();
+  }
   playFrom(currentIndex >= 0 ? currentIndex : 0);
 };
+
+// Web Speech는 speechSynthesis가 Web Audio 외부에서 돌아 백그라운드 라우팅이 불가.
+// 모바일에서 탭을 나가면 브라우저가 강제로 끊음 → 사용자에게 안내.
+let bgNoticeShown = false;
+function notifyWebSpeechBgLimit() {
+  if (bgNoticeShown) return;
+  const mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  if (!mobile) return;
+  bgNoticeShown = true;
+  setStatus('모바일에서 백그라운드 재생은 Supertonic 엔진에서만 지원됩니다. 계속 듣고 싶다면 ✨ Supertonic으로 전환하세요.');
+  setTimeout(() => setStatus(''), 6000);
+}
 
 window.stopAll = function() {
   isPlaying = false;
@@ -515,6 +541,13 @@ window.stopAll = function() {
     speechSynthesis.cancel();
   } else {
     stopSupertonic();
+  }
+  teardownBackgroundAudio();
+  if ('mediaSession' in navigator) {
+    try {
+      navigator.mediaSession.playbackState = 'none';
+      navigator.mediaSession.metadata = null;
+    } catch(e) {}
   }
   document.querySelectorAll('.para-block.playing').forEach(el => el.classList.remove('playing'));
   document.getElementById('progress-bar').style.width = '0%';
@@ -535,6 +568,9 @@ window.pauseResume = function() {
       playFrom(playingIndex >= 0 ? playingIndex : 0);
     }
   }
+  if ('mediaSession' in navigator) {
+    try { navigator.mediaSession.playbackState = isPaused ? 'paused' : 'playing'; } catch(e) {}
+  }
 };
 
 async function playFrom(idx) {
@@ -542,10 +578,15 @@ async function playFrom(idx) {
     isPlaying = false;
     stopKeepalive();
     releaseWakeLock();
+    teardownBackgroundAudio();
+    if ('mediaSession' in navigator) {
+      try { navigator.mediaSession.playbackState = 'none'; } catch(e) {}
+    }
     return;
   }
   isPlaying = true;
   playingIndex = idx;
+  updateMediaSession(idx);
 
   // UI
   document.querySelectorAll('.para-block.playing').forEach(el => el.classList.remove('playing'));
@@ -779,11 +820,112 @@ function playDecodedBuffer(audioBuf, volume) {
     src.buffer = audioBuf;
     const gain = audioCtx.createGain();
     gain.gain.value = volume;
-    src.connect(gain); gain.connect(audioCtx.destination);
+    src.connect(gain);
+    // 백그라운드 재생이 가능하도록 MediaStream으로 라우팅(가능한 경우).
+    // <audio> 엘리먼트가 이 스트림을 재생하면서 모바일 브라우저의 오디오 세션을 점유.
+    gain.connect(mediaStreamDest || audioCtx.destination);
     currentSource = src;
     src.onended = () => { currentSource = null; resolve(); };
     src.start();
   });
+}
+
+// ================================================================
+//  백그라운드 재생 (MediaStream + <audio> + MediaSession)
+// ================================================================
+//  모바일 브라우저는 탭이 숨겨지면 일반 Web Audio 출력을 suspend하지만,
+//  <audio> 엘리먼트가 재생 중인 MediaStream은 "media session"으로 인식해
+//  백그라운드에서도 재생을 계속 허용한다. 문장 사이 공백에서 스트림이
+//  inactive 판정되지 않도록, 감지 불가능할 정도의 작은 무음 하트비트를
+//  스트림에 상시 흘려 스트림을 활성 유지한다.
+let mediaStreamDest = null;
+let bgAudioEl = null;
+let heartbeatSrc = null;
+
+async function ensureBackgroundAudio() {
+  // 반드시 사용자 제스처(재생 버튼) 안에서 호출돼야 모바일에서 play()가 허용됨.
+  await ensureAudioCtx();
+  if (bgAudioEl && mediaStreamDest) {
+    // 이미 설정됨 — <audio>가 멈춰있으면 다시 재생
+    try { if (bgAudioEl.paused) await bgAudioEl.play(); } catch(e) {}
+    return;
+  }
+  if (typeof audioCtx.createMediaStreamDestination !== 'function') return; // 미지원 브라우저
+
+  try {
+    mediaStreamDest = audioCtx.createMediaStreamDestination();
+
+    // 하트비트: ~-80dB 무음에 가까운 노이즈를 1초 루프로 항상 흘린다.
+    const sr = audioCtx.sampleRate;
+    const hb = audioCtx.createBuffer(1, sr, sr);
+    const d = hb.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() - 0.5) * 0.00008;
+    heartbeatSrc = audioCtx.createBufferSource();
+    heartbeatSrc.buffer = hb;
+    heartbeatSrc.loop = true;
+    heartbeatSrc.connect(mediaStreamDest);
+    heartbeatSrc.start();
+
+    // 백그라운드 점유용 <audio>. 화면에 보이진 않지만 DOM에 부착돼야 모바일에서 재생됨.
+    bgAudioEl = document.createElement('audio');
+    bgAudioEl.autoplay = true;
+    bgAudioEl.playsInline = true;
+    bgAudioEl.setAttribute('playsinline', '');
+    bgAudioEl.muted = false;     // muted면 오디오 세션 점유가 안 됨
+    bgAudioEl.volume = 1.0;
+    bgAudioEl.srcObject = mediaStreamDest.stream;
+    bgAudioEl.style.cssText = 'position:fixed;left:-9999px;width:1px;height:1px;';
+    document.body.appendChild(bgAudioEl);
+    await bgAudioEl.play();
+  } catch(e) {
+    console.warn('background audio setup failed:', e);
+    try { heartbeatSrc?.stop(); } catch(_) {}
+    heartbeatSrc = null;
+    mediaStreamDest = null;
+    if (bgAudioEl) { try { bgAudioEl.remove(); } catch(_) {} bgAudioEl = null; }
+  }
+}
+
+function teardownBackgroundAudio() {
+  try { heartbeatSrc?.stop(); } catch(_) {}
+  heartbeatSrc = null;
+  if (bgAudioEl) {
+    try { bgAudioEl.pause(); bgAudioEl.srcObject = null; bgAudioEl.remove(); } catch(_) {}
+    bgAudioEl = null;
+  }
+  mediaStreamDest = null;
+}
+
+// ── MediaSession (잠금화면/알림 재생 컨트롤) ──
+function setupMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+  try {
+    navigator.mediaSession.setActionHandler('play',  () => { if (isPaused) pauseResume(); });
+    navigator.mediaSession.setActionHandler('pause', () => { if (!isPaused) pauseResume(); });
+    navigator.mediaSession.setActionHandler('stop',  () => stopAll());
+    navigator.mediaSession.setActionHandler('previoustrack', () => {
+      if (playingIndex > 0) { const i = playingIndex - 1; stopAll(); playFrom(i); }
+    });
+    navigator.mediaSession.setActionHandler('nexttrack', () => {
+      if (playingIndex >= 0 && playingIndex < paragraphs.length - 1) {
+        const i = playingIndex + 1; stopAll(); playFrom(i);
+      }
+    });
+  } catch(e) {}
+}
+
+function updateMediaSession(idx) {
+  if (!('mediaSession' in navigator)) return;
+  try {
+    const p = paragraphs[idx] || '';
+    const snippet = getPlainText(p).replace(/\s+/g, ' ').slice(0, 80) || 'TTS 재생';
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: snippet,
+      artist: `문단 ${idx + 1} / ${paragraphs.length}`,
+      album: engine === 'supertonic' ? 'Supertonic TTS' : 'Web Speech',
+    });
+    navigator.mediaSession.playbackState = isPaused ? 'paused' : 'playing';
+  } catch(e) {}
 }
 
 function ensureAudioCtx() {
@@ -876,6 +1018,8 @@ let resumeTimer = null;
 
 async function handleVisibilityResume() {
   try { if (audioCtx) await audioCtx.resume(); } catch(e) {}
+  // 백그라운드 <audio>가 일시정지됐으면 다시 재생 (모바일에서 세션 복귀 시 필요)
+  try { if (bgAudioEl && bgAudioEl.paused) await bgAudioEl.play(); } catch(e) {}
   if (!wasActiveWhenHidden) return;
 
   // 포그라운드 복귀 직후 짧은 유예를 둬서 자연 재개되는 경우(백그라운드 시간이 짧아
